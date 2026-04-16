@@ -69,7 +69,7 @@ def get_grid_data():
 
 
 # --- 2. THE UI ---
-st.title("🚀 10-Day Production Overview")
+st.title("10-Day Orders Overview")
 
 if st.sidebar.button('🔄 Refresh Grid'):
     st.cache_resource.clear()  # Force a fresh DB connection
