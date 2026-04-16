@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def get_db_connection():
+    st.write("Checking connection...") # This will show up on the app screen
     """
     Direct connection to Azure PostgreSQL.
     Priority: 
