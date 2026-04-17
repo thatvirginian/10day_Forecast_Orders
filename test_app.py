@@ -63,8 +63,6 @@ def get_grid_data():
             index='Location', columns='Date', values='DisplayValue',
             aggfunc=lambda x: ' \n '.join(x)
         ).fillna("-")
-        # 2. Rename the column headers to the "Sat 4/18" format
-        grid.columns = [pd.to_datetime(col).strftime('%a - %m/%d') for col in grid.columns]
         loc_map = dict(zip(df['Location'], df['location_id']))
         return grid, loc_map
     return pd.DataFrame(), {}
