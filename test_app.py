@@ -80,7 +80,7 @@ grid_df, loc_map = get_grid_data()
 if grid_df.empty:
     st.warning("No future orders found in Azure.")
 else:
-    st.write("### Order Volume by Store")
+    st.write("### Order Volume by Store - Manager Use Only - DO NOT PRINT")
     # This keeps the 'Date' objects underneath but shows 'Sat 04/18' on top
     display_config = {
         str(col): st.column_config.Column(col.strftime('%a %m/%d')) 
