@@ -83,7 +83,7 @@ else:
     st.write("### Order Volume by Store")
     # This keeps the 'Date' objects underneath but shows 'Sat 04/18' on top
     display_config = {
-        col: st.column_config.Column(col.strftime('%a %m/%d')) 
+        str(col): st.column_config.Column(col.strftime('%a %m/%d')) 
         for col in grid_df.columns
     }
     
