@@ -81,8 +81,15 @@ if grid_df.empty:
     st.warning("No future orders found in Azure.")
 else:
     st.write("### Order Volume by Store")
-    event = st.dataframe(grid_df, width=2000, on_select="rerun", selection_mode="single-cell")
+    # This keeps the 'Date' objects underneath but shows 'Sat 04/18' on top
+    display_config = {
+        col: st.column_config.Column(col.strftime('%a %m/%d')) 
+        for col in grid_df.columns
+    }
+    
+    event = st.dataframe(grid_df, width=2000, column_config=display_config, on_select="rerun", selection_mode="single-cell")
 
+    
     # --- 3. THE DRILL-DOWN ---
     if event and event.selection.get("cells"):
         cell = event.selection["cells"][0]
