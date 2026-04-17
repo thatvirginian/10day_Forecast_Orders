@@ -1,0 +1,11 @@
+[server]
+# This allows the app to be "framed" inside SharePoint
+enableCORS = false
+enableXsrfProtection = false
+
+# This fixes most "Connecting..." websocket hangs
+enableWebsocketCompression = false
+
+[theme]
+# Optional: Make it look a bit more like SharePoint/Corporate
+primaryColor = "#0078d4" # Microsoft Blue
