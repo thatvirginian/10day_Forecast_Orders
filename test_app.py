@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 warnings.filterwarnings("ignore", category=UserWarning, module='pandas')
 
 # --- SETTINGS ---
-st.set_page_config(page_title="Anita's Logistics Grid", layout="wide")
+st.set_page_config(page_title="Anita's Logistics Grid", layout="wide", initial_sidebar_state="collapsed")
 
 
 @st.cache_resource
