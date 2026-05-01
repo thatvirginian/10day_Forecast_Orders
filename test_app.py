@@ -161,16 +161,16 @@ st.markdown("""
         justify-content: center !important;
         box-sizing: border-box !important;
         overflow: hidden !important;
-        background-color: var(--btn-bg, #ffffff);
+        background-color: var(--btn-bg, #ffffff) !important;
      
     }
     .stButton button:hover {
-        background-color: #d3db3b;
+        background-color: #d3db3b !important;
     }
     /* 5. TYPOGRAPHY */
     .stButton button div p {
-        font-family: 'Times New Roman', serif !important;
-        font-size: 14px !important;
+        font-family: 'Open Sans', serif !important;
+        font-size: 12px !important;
         line-height: 1.1 !important;
         text-align: center !important;
         white-space: pre-line !important; 
@@ -181,7 +181,27 @@ st.markdown("""
 
     .stButton button:disabled {
         background-color: #f9f9f9 !important;
-        opacity: 0.8 !important;
+        opacity: 0.5 !important;
+    }
+
+    /* Keep your hover effect - it will still override since it's lower in the code */
+    .stButton button:hover {
+        background-color: #d3db3b !important;
+    }
+    
+    /* 1. Target the div that contains your gold key in its class */
+    div[class*="st-key-"][class*="_gold"] button {
+        background-color: #B8860B !important;
+    }
+
+    /* 2. Fix the text color inside that specific button */
+    div[class*="st-key-"][class*="_gold"] button p {
+        color: Black !important;
+    }
+
+    /* 3. Ensure your hover still wins */
+    div[class*="st-key-"][class*="_gold"] button:hover {
+        background-color: #d3db3b !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -201,16 +221,15 @@ if not grid_df.empty:
                 cell_content = grid_df.at[location, date_col]
 
                 if cell_content != "-":
-                    revenue = rev_map.get((location, date_col), 0)
-                    if revenue >= 1000:
-                        st.markdown(
-                            f'<div style="display: contents; --btn-bg: #B8860B; --btn-text: white;">',
-                            unsafe_allow_html=True
-                        )
-                    
-                    if st.button(cell_content, key=f"btn_{location}_{date_col}"):
+                    rev = rev_map.get((location, date_col), 0)
+                    # We append a suffix to the key ONLY if it is high value
+                    suffix = "_gold" if rev >= 1000 else ""
+                    button_key = f"btn_{location}_{date_col}{suffix}"
+
+                    if st.button(cell_content, key=button_key):
                         st.session_state.selected_loc = location
                         st.session_state.selected_date = date_col
+
                 else:
                     # Uniform Placeholder - Force Uppercase to match content
                     st.button(f"{location.upper()}\n(  )am | (  )pm\n$0.00",
@@ -279,7 +298,7 @@ if "selected_loc" in st.session_state and "selected_date" in st.session_state:
             time_str = order_group['local_time'].iloc[0].strftime('%I:%M %p')
             total = order_group['order_total'].iloc[0]
 
-            is_high_value = total >= 1000
+            is_high_value = total >= 2000
             alert_emoji = "⚠️ " if is_high_value else ""
 
             is_delivery = order_group['item_name'].str.contains('delivery', case=False).any()
