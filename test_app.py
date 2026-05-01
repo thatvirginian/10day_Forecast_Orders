@@ -312,5 +312,9 @@ if "selected_loc" in st.session_state and "selected_date" in st.session_state:
 
                 for _, row in order_group.iterrows():
                     st.markdown(f"**{int(row['quantity'])} - {row['item_name']}**")
-                    if row['mods']:
-                        st.caption(f"↳ {row['mods']}")
+
+                    # Check if mods exists and is not 'nan' (string) or None
+                    mods = row.get('mods')
+                    if pd.notna(mods) and str(mods).lower() != 'nan' and str(mods).strip() != "":
+                        st.caption(f"↳ {mods}")
+                    
