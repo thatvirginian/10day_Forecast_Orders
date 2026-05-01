@@ -191,7 +191,7 @@ st.markdown("""
     
     /* 1. Target the div that contains your gold key in its class */
     div[class*="st-key-"][class*="_gold"] button {
-        background-color: #B8860B !important;
+        background-color: #FFF200 !important;
     }
 
     /* 2. Fix the text color inside that specific button */
