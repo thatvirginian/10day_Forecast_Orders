@@ -3,150 +3,295 @@ import pandas as pd
 import warnings
 from datetime import datetime, timedelta
 from src.database_setup import get_db_connection
-from zoneinfo import ZoneInfo
 
-# Suppress the Pandas/SQLAlchemy warning
+# --- CONFIG ---
 warnings.filterwarnings("ignore", category=UserWarning, module='pandas')
-
-# --- SETTINGS ---
 st.set_page_config(page_title="Anita's Logistics Grid", layout="wide", initial_sidebar_state="collapsed")
 
 
 @st.cache_resource
 def get_cached_conn():
-    """Maintains a persistent 'pipe' to Azure."""
     return get_db_connection()
 
 
 def run_query(query, params=()):
-    """Executes SQL with an automatic reconnection safety net."""
     try:
         conn = get_cached_conn()
-        # Check if connection is alive (0 is open, non-zero is closed/broken)
         if conn.closed != 0:
             st.cache_resource.clear()
             conn = get_cached_conn()
         return pd.read_sql(query, conn, params=params)
-    except Exception as e:
-        # If any database error occurs, reset the cache and try one last time
+    except Exception:
         st.cache_resource.clear()
         conn = get_cached_conn()
         return pd.read_sql(query, conn, params=params)
 
 
-# --- 1. DATA PREP ---
+# --- DATA PREP ---
 def get_grid_data():
     start_date = datetime.now().date() + timedelta(days=1)
-    end_date = start_date + timedelta(days=10)
+    end_date = start_date + timedelta(days=14)
+    all_dates = [start_date + timedelta(days=i) for i in range(14)]
 
     query = """
-            SELECT 
-                l.location_name                 AS "Location", 
-                l.store_guid                    AS "location_id",
-                (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date AS "Date",
-                CASE 
-                    WHEN extract(hour FROM (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')) < 13 THEN 'AM'
-                    ELSE 'PM'
-                END AS "DayPart",
-                count(h.order_guid) AS "OrderCount"
-            FROM orders_head h
-            LEFT JOIN locations l ON h.location_id::uuid = l.store_guid
-            WHERE (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
-            AND h.deleted = FALSE
-            GROUP BY 1, 2, 3, 4
-        """
+        SELECT 
+            l.location_name                                 AS "Location", 
+            l.store_guid                                    AS "location_id",
+            (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date AS "Date",
+            CASE 
+                WHEN extract(hour FROM (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')) < 13 THEN 'AM'
+                ELSE 'PM'
+            END AS "DayPart",
+            count(DISTINCT h.order_guid) AS "OrderCount",
+            sum(sum(c.total_amount)) OVER(
+                PARTITION BY l.location_name, (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date
+            ) AS "DailyTotalRevenue"
+        FROM orders_head h
+        LEFT JOIN locations l ON h.location_id::uuid = l.store_guid
+        JOIN order_checks c ON h.order_guid = c.order_guid 
+        WHERE (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
+        AND h.deleted = FALSE
+        GROUP BY 1, 2, 3, 4
+    """
     df = run_query(query, (start_date, end_date))
 
     if not df.empty:
-        df['DisplayValue'] = df.apply(lambda x: f"({x['OrderCount']} : {x['DayPart'].lower()})", axis=1)
-        grid = df.pivot_table(
-            index='Location', columns='Date', values='DisplayValue',
-            aggfunc=lambda x: ' \n '.join(x)
-        ).fillna("-")
+        rev_map = df.groupby(['Location', 'Date'])['DailyTotalRevenue'].first().to_dict()
+
+        def format_horizontal_slots(group):
+            am_count = "  "
+            pm_count = "  "
+            for _, row in group.iterrows():
+                if row['DayPart'] == 'AM':
+                    am_count = f"{row['OrderCount']:2}"
+                else:
+                    pm_count = f"{row['OrderCount']:2}"
+            return f"({am_count})am | ({pm_count})pm"
+
+        grid = df.groupby(['Location', 'Date']).apply(format_horizontal_slots).unstack(level=1)
+        grid = grid.reindex(columns=all_dates).fillna("-")
+
+        for col in grid.columns:
+            for idx in grid.index:
+                val = grid.at[idx, col]
+                if val != "-":
+                    rev = rev_map.get((idx, col), 0)
+                    grid.at[idx, col] = f"{idx.upper()}\n{val}\n${rev:,.2f}"
+
         loc_map = dict(zip(df['Location'], df['location_id']))
-        return grid, loc_map
-    return pd.DataFrame(), {}
+        return grid, loc_map, rev_map
+    return pd.DataFrame(columns=all_dates), {}
 
 
-# --- 2. THE UI ---
-st.title("10-Day Orders Overview")
-
-if st.sidebar.button('🔄 Refresh Grid'):
-    st.cache_resource.clear()  # Force a fresh DB connection
-    st.rerun()
-
-grid_df, loc_map = get_grid_data()
-
-if grid_df.empty:
-    st.warning("No future orders found in Azure.")
-else:
-    st.write("### Order Volume by Store - Manager Use Only - DO NOT PRINT")
-    # This keeps the 'Date' objects underneath but shows 'Sat 04/18' on top
-    display_config = {
-        str(col): st.column_config.Column(col.strftime('%a %m/%d')) 
-        for col in grid_df.columns
+# --- UI & CSS ---
+st.markdown("""
+    <style>
+    /* 1. GRID SCALE & HORIZONTAL ALIGNMENT */
+    [data-testid="stHorizontalBlock"] {
+        gap: 0px !important;
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
     }
-    
-    event = st.dataframe(grid_df, width=2000, column_config=display_config, on_select="rerun", selection_mode="single-cell")
 
-    
-    # --- 3. THE DRILL-DOWN ---
-    if event and event.selection.get("cells"):
-        cell = event.selection["cells"][0]
-        # Robust selection logic for different Streamlit versions
-        raw_row = cell[0] if isinstance(cell, (list, tuple)) else cell.get('row')
-        raw_col = cell[1] if isinstance(cell, (list, tuple)) else cell.get('column')
+    [data-testid="stColumn"] {
+        padding: 0px !important;
+        margin: 0px !important;
+        flex: 1 1 auto !important; 
+        min-width: 110px !important; 
+    }
 
-        try:
-            selected_loc = grid_df.index[raw_row] if isinstance(raw_row, int) else raw_row
-            selected_date = grid_df.columns[raw_col] if isinstance(raw_col, int) else raw_col
-        except:
-            selected_loc, selected_date = None, None
+    /* 2. THE FUSION FIX: Kill the gap between header and buttons */
+    [data-testid="stColumn"] [data-testid="stVerticalBlock"] {
+        gap: 0px !important; 
+    }
 
-        if selected_loc and selected_date:
-            db_location_id = loc_map.get(selected_loc)
-            st.write("---")
-            st.subheader(f"🔍 Details for {selected_loc} on {selected_date}")
+    /* Target the Markdown container specifically to kill bottom padding */
+    [data-testid="stColumn"] [data-testid="stMarkdownContainer"] {
+        margin-bottom: 0px !important;
+        padding-bottom: 0px !important;
+    }
 
-            flat_detail_query = """
-                            SELECT 
-                                h.order_number,
-                                c.customer_first || ' ' || c.customer_last AS customer_name,
-                                h.estimated_fulfillment_date AT TIME ZONE 'America/New_York' AS local_time,
-                                oi.item_name,
-                                oi.quantity,
-                                im.mod_name
-                            FROM orders_head h
-                            JOIN order_checks c ON h.order_guid = c.order_guid
-                            JOIN order_items oi ON c.check_guid = oi.check_guid
-                            LEFT JOIN item_modifiers im ON oi.selection_guid = im.selection_guid
-                            WHERE h.location_id::uuid = %s 
-                              AND (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date = %s 
-                              AND h.deleted = FALSE
-                            -- SORT BY TIME FIRST, THEN ORDER NUMBER
-                            ORDER BY local_time ASC, h.order_number ASC
-                        """
+    /* Target the button container specifically to kill top padding */
+    [data-testid="stColumn"] .element-container {
+        margin-top: 0px !important;
+        padding-top: 0px !important;
+        margin-bottom: 0px !important;
+    }
 
-            full_df = run_query(flat_detail_query, (db_location_id, selected_date))
+    [data-testid="stColumn"] [data-testid="stElementContainer"] {
+        width: 100% !important;
+        margin: 0px !important;
+        padding: 0px !important;
+    }
 
-            if full_df.empty:
-                st.info("No records found.")
-            else:
-                for order_num, order_group in full_df.groupby('order_number', sort=False):
-                    customer = order_group['customer_name'].iloc[0]
-                    # Ensure we grab the actual timestamp for the label
-                    time_val = order_group['local_time'].iloc[0]
-                    time_str = time_val.strftime('%I:%M %p')
+    /* 3. DATE HEADERS */
+    .date-header {
+        font-size: 14px !important;
+        text-transform: uppercase;
+        font-weight: bold;
+        text-align: center;
+        background: #f1f1f1;
+        border: 0.5px solid #d0d0d0;
+        /* Force border-collapse behavior */
+        margin: 0px !important;
+        padding: 5px 0px !important;
+        width: 100%;
+        box-sizing: border-box !important;
+        display: block !important;
+    }
 
-                    is_delivery = order_group['item_name'].str.contains('delivery', case=False).any()
-                    tag = " - 🚚 DELIVERY" if is_delivery else ""
+    /* 4. BUTTON CORE DESIGN */
+    div.stButton, .stButton > button {
+        width: 100% !important;
+        
+    }
 
-                    with st.expander(f"({time_str}) Order {order_num} - {customer}{tag}"):
-                        # Inner loop for items remains the same
-                        for item_name, item_group in order_group.groupby('item_name', sort=False):
-                            qty = int(item_group['quantity'].iloc[0])
-                            st.markdown(f"**{qty} - {item_name}**")
+    .stButton button {
+        width: 100% !important;
+        aspect-ratio: 2.2 / 1 !important; 
+        height: auto !important;
+        margin: 0px !important; 
+        /* Match header border and remove the top border to 'fuse' with header */
+        border: 0.5px solid #d0d0d0 !important;
+        border-top: none !important; 
+        border-radius: 0px !important; 
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        box-sizing: border-box !important;
+        overflow: hidden !important;
+        background-color: var(--btn-bg, #ffffff);
+     
+    }
+    .stButton button:hover {
+        background-color: #d3db3b;
+    }
+    /* 5. TYPOGRAPHY */
+    .stButton button div p {
+        font-family: 'Times New Roman', serif !important;
+        font-size: 14px !important;
+        line-height: 1.1 !important;
+        text-align: center !important;
+        white-space: pre-line !important; 
+        color: #111 !important;
+        font-weight: 700 !important;
+        margin: 0 !important;
+    }
 
-                            mods = item_group['mod_name'].dropna().unique()
-                            if len(mods) > 0:
-                                st.caption(f"↳ {', '.join(mods)}")
+    .stButton button:disabled {
+        background-color: #f9f9f9 !important;
+        opacity: 0.8 !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("14-Day Future Orders Forecast")
+
+grid_df, loc_map, rev_map = get_grid_data()
+
+if not grid_df.empty:
+    cols = st.columns(14)
+    for i, date_col in enumerate(grid_df.columns):
+        with cols[i]:
+            # Date Header
+            st.markdown(f"<div class='date-header'>{date_col.strftime('%a %m/%d')}</div>", unsafe_allow_html=True)
+
+            for location in grid_df.index:
+                cell_content = grid_df.at[location, date_col]
+
+                if cell_content != "-":
+                    revenue = rev_map.get((location, date_col), 0)
+                    if revenue >= 1000:
+                        st.markdown(
+                            f'<div style="display: contents; --btn-bg: #B8860B; --btn-text: white;">',
+                            unsafe_allow_html=True
+                        )
+                    
+                    if st.button(cell_content, key=f"btn_{location}_{date_col}"):
+                        st.session_state.selected_loc = location
+                        st.session_state.selected_date = date_col
+                else:
+                    # Uniform Placeholder - Force Uppercase to match content
+                    st.button(f"{location.upper()}\n(  )am | (  )pm\n$0.00",
+                              key=f"empty_{location}_{date_col}", disabled=True)
+
+## --- DRILL-DOWN ---
+if "selected_loc" in st.session_state and "selected_date" in st.session_state:
+    sel_loc = st.session_state.selected_loc
+    sel_date = st.session_state.selected_date
+    db_loc_id = loc_map.get(sel_loc)
+
+    st.write("---")
+    st.subheader(f"🔍 {sel_loc.upper()} - {sel_date.strftime('%m/%d')}")
+
+    detail_query = """
+        WITH OrderTotals AS (
+            SELECT 
+                h.order_guid,
+                SUM(c.total_amount) as true_order_total
+            FROM orders_head h
+            JOIN order_checks c ON h.order_guid = c.order_guid
+            WHERE h.location_id::uuid = %s 
+              AND (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date = %s
+              AND h.deleted = FALSE
+            GROUP BY h.order_guid
+        )
+        SELECT 
+            h.order_guid,
+            h.order_number,
+            CONCAT_WS(' ', c.customer_first, c.customer_last) AS customer_name,
+            (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York') AS local_time,
+            oi.item_name,
+            oi.quantity,
+            STRING_AGG(DISTINCT im.mod_name, ', ') AS mods,
+            ot.true_order_total AS order_total
+        FROM orders_head h
+        JOIN order_checks c ON h.order_guid = c.order_guid
+        JOIN order_items oi ON c.check_guid = oi.check_guid
+        LEFT JOIN item_modifiers im ON oi.selection_guid = im.selection_guid
+        JOIN OrderTotals ot ON h.order_guid = ot.order_guid
+        WHERE h.location_id::uuid = %s 
+          AND (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date = %s 
+          AND h.deleted = FALSE
+        GROUP BY 
+            h.order_guid,
+            h.order_number, 
+            c.customer_first, 
+            c.customer_last, 
+            h.estimated_fulfillment_date, 
+            oi.item_name, 
+            oi.quantity,
+            ot.true_order_total
+        ORDER BY local_time ASC
+    """
+    full_df = run_query(detail_query, (db_loc_id, sel_date, db_loc_id, sel_date))
+
+    if not full_df.empty:
+        # Grouping by the unique GUID instead of the non-unique Number
+        for order_guid, order_group in full_df.groupby('order_guid', sort=False):
+            # We still pull the order_number for the label
+            order_num = order_group['order_number'].iloc[0]
+            customer = order_group['customer_name'].iloc[0]
+            if not customer or customer.strip() == "":
+                customer = "NO NAME"
+
+            time_str = order_group['local_time'].iloc[0].strftime('%I:%M %p')
+            total = order_group['order_total'].iloc[0]
+
+            is_high_value = total >= 1000
+            alert_emoji = "⚠️ " if is_high_value else ""
+
+            is_delivery = order_group['item_name'].str.contains('delivery', case=False).any()
+            tag = " - 🚚 DELIVERY" if is_delivery else ""
+
+            header_label = f"({time_str}) ORDER {order_num} - {customer.upper()} - ${total:,.2f} {alert_emoji}{tag}"
+
+            with st.expander(header_label):
+                if is_high_value:
+                    st.error(f"**High Value Order: ${total:,.2f}** - Verify production capacity.")
+
+                for _, row in order_group.iterrows():
+                    st.markdown(f"**{int(row['quantity'])} - {row['item_name']}**")
+                    if row['mods']:
+                        st.caption(f"↳ {row['mods']}")
