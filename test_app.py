@@ -59,14 +59,16 @@ def get_grid_data():
         rev_map = df.groupby(['Location', 'Date'])['DailyTotalRevenue'].first().to_dict()
 
         def format_horizontal_slots(group):
-            am_count = "  "
-            pm_count = "  "
+            am_count = " 0"
+            pm_count = " 0"
             for _, row in group.iterrows():
                 if row['DayPart'] == 'AM':
-                    am_count = f"{row['OrderCount']:2}"
+                    am_count = f"{row['OrderCount']:3}"
                 else:
-                    pm_count = f"{row['OrderCount']:2}"
-            return f"({am_count})am | ({pm_count})pm"
+                    pm_count = f"{row['OrderCount']:3}"
+
+
+            return f"AM:{am_count} | PM:{pm_count} "
 
         grid = df.groupby(['Location', 'Date']).apply(format_horizontal_slots).unstack(level=1)
         grid = grid.reindex(columns=all_dates).fillna("-")
@@ -76,7 +78,7 @@ def get_grid_data():
                 val = grid.at[idx, col]
                 if val != "-":
                     rev = rev_map.get((idx, col), 0)
-                    grid.at[idx, col] = f"{idx.upper()}\n{val}\n${rev:,.2f}"
+                    grid.at[idx, col] = f"{idx.title()}\n{val}\n${rev:,.2f}"
 
         loc_map = dict(zip(df['Location'], df['location_id']))
         return grid, loc_map, rev_map
@@ -203,6 +205,26 @@ st.markdown("""
     div[class*="st-key-"][class*="_gold"] button:hover {
         background-color: #d3db3b !important;
     }
+    
+    .total-header {
+        font-size: 12px !important;
+        text-transform: uppercase;
+        font-weight: 800;
+        text-align: center;
+        background: #333;
+        color: white;
+        border: 0.5px solid #333;
+        margin-top: 10px !important; /* Space between grid and total row */
+        padding: 3px 0px !important;
+        width: 100%;
+        display: block !important;
+    }
+
+    /* Target the total buttons specifically if you want a different base color */
+    div[class*="st-key-total_"] button {
+        background-color: #f8f9fa !important;
+        border-top: 1px solid #d0d0d0 !important; /* Give the total row a top border */
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -232,8 +254,35 @@ if not grid_df.empty:
 
                 else:
                     # Uniform Placeholder - Force Uppercase to match content
-                    st.button(f"{location.upper()}\n(  )am | (  )pm\n$0.00",
+                    st.button(f"{location.title()}\nAM: 0 | PM: 0\n$0.00",
                               key=f"empty_{location}_{date_col}", disabled=True)
+
+# --- TOTAL ROW SECTION ---
+st.markdown("<div class='total-header'>Daily Summary</div>", unsafe_allow_html=True)
+
+# 1. Sum up the daily totals for all stores
+daily_grand_totals = {}
+for date_col in grid_df.columns:
+    day_sum = 0
+    for location in grid_df.index:
+        day_sum += rev_map.get((location, date_col), 0)
+    daily_grand_totals[date_col] = day_sum
+
+# 2. Create the columns for the footer
+total_cols = st.columns(14)
+for i, date_col in enumerate(grid_df.columns):
+    with total_cols[i]:
+        total_rev = daily_grand_totals.get(date_col, 0)
+
+        # Determine if the daily company total is "High Volume" (e.g., $10k)
+        suffix = "_gold" if total_rev >= 10000 else ""
+
+        # This matches the 3-line format: NAME / SLOTS / TOTAL
+        # We leave the middle line empty or use it for a summary label
+        total_label = f"Total Revenue\n${total_rev:,.2f}"
+
+        st.button(total_label, key=f"total_{date_col}{suffix}", disabled=True)
+
 
 ## --- DRILL-DOWN ---
 if "selected_loc" in st.session_state and "selected_date" in st.session_state:
@@ -242,7 +291,7 @@ if "selected_loc" in st.session_state and "selected_date" in st.session_state:
     db_loc_id = loc_map.get(sel_loc)
 
     st.write("---")
-    st.subheader(f"🔍 {sel_loc.upper()} - {sel_date.strftime('%m/%d')}")
+    st.subheader(f"🔍 {sel_loc.title()} - {sel_date.strftime('%m/%d')}")
 
     detail_query = """
         WITH OrderTotals AS (
@@ -317,4 +366,3 @@ if "selected_loc" in st.session_state and "selected_date" in st.session_state:
                     mods = row.get('mods')
                     if pd.notna(mods) and str(mods).lower() != 'nan' and str(mods).strip() != "":
                         st.caption(f"↳ {mods}")
-                    
