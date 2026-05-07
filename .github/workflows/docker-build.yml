@@ -26,3 +26,4 @@ jobs:
           tags: |
             controlanalystanitas/forecast-dashboard:latest
             controlanalystanitas/forecast-dashboard:${{ github.sha }}
+            
