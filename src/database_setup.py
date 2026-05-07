@@ -29,6 +29,7 @@ def get_db_connection():
             port=creds.get("DB_PORT", "5432"),
             sslmode="require"  # Mandatory for Azure Postgres
         )
+        st.write(f"DEBUG: Host key being used is: {creds.get('DB_HOST')}")
         return conn
     except Exception as e:
         # In Streamlit, this will show a clean error message to the user
