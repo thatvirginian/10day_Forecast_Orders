@@ -19,7 +19,7 @@ def get_db_connection():
     # 2. Fallback to local Environment Variables
     else:
         creds = os.environ
-
+    st.write(f"DEBUG: Host key being used is: {creds.get('DB_HOST')}")
     try:
         conn = psycopg2.connect(
             host=creds.get("DB_HOST"),
