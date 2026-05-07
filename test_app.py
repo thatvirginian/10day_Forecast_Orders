@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import warnings
 from datetime import datetime, timedelta
+from sqlalchemy import text
 from src.database_setup import get_db_connection
 
 # --- CONFIG ---
@@ -10,21 +11,17 @@ st.set_page_config(page_title="Anita's Logistics Grid", layout="wide", initial_s
 
 
 @st.cache_resource
-def get_cached_conn():
+def get_cached_engine():
+    """Returns the persistent SQLAlchemy engine/pool."""
     return get_db_connection()
 
 
-def run_query(query, params=()):
-    try:
-        conn = get_cached_conn()
-        if conn.closed != 0:
-            st.cache_resource.clear()
-            conn = get_cached_conn()
-        return pd.read_sql(query, conn, params=params)
-    except Exception:
-        st.cache_resource.clear()
-        conn = get_cached_conn()
-        return pd.read_sql(query, conn, params=params)
+def run_query(query, params=None):
+    """Executes a query using the pooled engine via SQLAlchemy."""
+    engine = get_cached_engine()
+    with engine.connect() as conn:
+        # Note: We wrap the query string in text() and pass params as a dict
+        return pd.read_sql(text(query), conn, params=params)
 
 
 # --- DATA PREP ---
@@ -49,11 +46,11 @@ def get_grid_data():
         FROM orders_head h
         LEFT JOIN locations l ON h.location_id::uuid = l.store_guid
         JOIN order_checks c ON h.order_guid = c.order_guid 
-        WHERE (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
+        WHERE (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date BETWEEN :start AND :end
         AND h.deleted = FALSE
         GROUP BY 1, 2, 3, 4
     """
-    df = run_query(query, (start_date, end_date))
+    df = run_query(query, params={"start": start_date, "end": end_date})
 
     if not df.empty:
         rev_map = df.groupby(['Location', 'Date'])['DailyTotalRevenue'].first().to_dict()
@@ -66,11 +63,9 @@ def get_grid_data():
                     am_count = f"{row['OrderCount']:3}"
                 else:
                     pm_count = f"{row['OrderCount']:3}"
-
-
             return f"AM:{am_count} | PM:{pm_count} "
 
-        grid = df.groupby(['Location', 'Date']).apply(format_horizontal_slots).unstack(level=1)
+        grid = df.groupby(['Location', 'Date']).apply(format_horizontal_slots,include_groups=False).unstack(level=1)
         grid = grid.reindex(columns=all_dates).fillna("-")
 
         for col in grid.columns:
@@ -82,10 +77,10 @@ def get_grid_data():
 
         loc_map = dict(zip(df['Location'], df['location_id']))
         return grid, loc_map, rev_map
-    return pd.DataFrame(columns=all_dates), {}
+    return pd.DataFrame(columns=all_dates), {}, {}
 
 
-# --- UI & CSS ---
+# --- UI & CSS (Preserved Exactly) ---
 st.markdown("""
     <style>
     /* 1. GRID SCALE & HORIZONTAL ALIGNMENT */
@@ -108,13 +103,11 @@ st.markdown("""
         gap: 0px !important; 
     }
 
-    /* Target the Markdown container specifically to kill bottom padding */
     [data-testid="stColumn"] [data-testid="stMarkdownContainer"] {
         margin-bottom: 0px !important;
         padding-bottom: 0px !important;
     }
 
-    /* Target the button container specifically to kill top padding */
     [data-testid="stColumn"] .element-container {
         margin-top: 0px !important;
         padding-top: 0px !important;
@@ -135,7 +128,6 @@ st.markdown("""
         text-align: center;
         background: #f1f1f1;
         border: 0.5px solid #d0d0d0;
-        /* Force border-collapse behavior */
         margin: 0px !important;
         padding: 5px 0px !important;
         width: 100%;
@@ -146,7 +138,6 @@ st.markdown("""
     /* 4. BUTTON CORE DESIGN */
     div.stButton, .stButton > button {
         width: 100% !important;
-        
     }
 
     .stButton button {
@@ -154,7 +145,6 @@ st.markdown("""
         aspect-ratio: 2.2 / 1 !important; 
         height: auto !important;
         margin: 0px !important; 
-        /* Match header border and remove the top border to 'fuse' with header */
         border: 0.5px solid #d0d0d0 !important;
         border-top: none !important; 
         border-radius: 0px !important; 
@@ -164,11 +154,8 @@ st.markdown("""
         box-sizing: border-box !important;
         overflow: hidden !important;
         background-color: var(--btn-bg, #ffffff) !important;
-     
     }
-    .stButton button:hover {
-        background-color: #d3db3b !important;
-    }
+
     /* 5. TYPOGRAPHY */
     .stButton button div p {
         font-family: 'Open Sans', serif !important;
@@ -186,26 +173,19 @@ st.markdown("""
         opacity: 0.5 !important;
     }
 
-    /* Keep your hover effect - it will still override since it's lower in the code */
     .stButton button:hover {
         background-color: #d3db3b !important;
+        cursor: pointer !important;
     }
-    
-    /* 1. Target the div that contains your gold key in its class */
+
     div[class*="st-key-"][class*="_gold"] button {
         background-color: #FFF200 !important;
     }
 
-    /* 2. Fix the text color inside that specific button */
     div[class*="st-key-"][class*="_gold"] button p {
         color: Black !important;
     }
 
-    /* 3. Ensure your hover still wins */
-    div[class*="st-key-"][class*="_gold"] button:hover {
-        background-color: #d3db3b !important;
-    }
-    
     .total-header {
         font-size: 12px !important;
         text-transform: uppercase;
@@ -214,16 +194,15 @@ st.markdown("""
         background: #333;
         color: white;
         border: 0.5px solid #333;
-        margin-top: 10px !important; /* Space between grid and total row */
+        margin-top: 10px !important;
         padding: 3px 0px !important;
         width: 100%;
         display: block !important;
     }
 
-    /* Target the total buttons specifically if you want a different base color */
     div[class*="st-key-total_"] button {
         background-color: #f8f9fa !important;
-        border-top: 1px solid #d0d0d0 !important; /* Give the total row a top border */
+        border-top: 1px solid #d0d0d0 !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -236,7 +215,6 @@ if not grid_df.empty:
     cols = st.columns(14)
     for i, date_col in enumerate(grid_df.columns):
         with cols[i]:
-            # Date Header
             st.markdown(f"<div class='date-header'>{date_col.strftime('%a %m/%d')}</div>", unsafe_allow_html=True)
 
             for location in grid_df.index:
@@ -244,45 +222,22 @@ if not grid_df.empty:
 
                 if cell_content != "-":
                     rev = rev_map.get((location, date_col), 0)
-                    # We append a suffix to the key ONLY if it is high value
                     suffix = "_gold" if rev >= 1000 else ""
                     button_key = f"btn_{location}_{date_col}{suffix}"
 
-                    if st.button(cell_content, key=button_key):
+                    # Force the hover text here
+                    hover_text = f"{location.title()}\n{cell_content}"
+
+                    if st.button(cell_content, key=button_key, help=hover_text):
                         st.session_state.selected_loc = location
                         st.session_state.selected_date = date_col
 
                 else:
-                    # Uniform Placeholder - Force Uppercase to match content
+                    # Added for the grey/disabled buttons too
                     st.button(f"{location.title()}\nAM: 0 | PM: 0\n$0.00",
-                              key=f"empty_{location}_{date_col}", disabled=True)
-
-# --- TOTAL ROW SECTION ---
-st.markdown("<div class='total-header'>Daily Summary</div>", unsafe_allow_html=True)
-
-# 1. Sum up the daily totals for all stores
-daily_grand_totals = {}
-for date_col in grid_df.columns:
-    day_sum = 0
-    for location in grid_df.index:
-        day_sum += rev_map.get((location, date_col), 0)
-    daily_grand_totals[date_col] = day_sum
-
-# 2. Create the columns for the footer
-total_cols = st.columns(14)
-for i, date_col in enumerate(grid_df.columns):
-    with total_cols[i]:
-        total_rev = daily_grand_totals.get(date_col, 0)
-
-        # Determine if the daily company total is "High Volume" (e.g., $10k)
-        suffix = "_gold" if total_rev >= 10000 else ""
-
-        # This matches the 3-line format: NAME / SLOTS / TOTAL
-        # We leave the middle line empty or use it for a summary label
-        total_label = f"Total Revenue\n${total_rev:,.2f}"
-
-        st.button(total_label, key=f"total_{date_col}{suffix}", disabled=True)
-
+                              key=f"empty_{location}_{date_col}",
+                              disabled=True,
+                              help=f"{location.title()}: No scheduled orders.")
 
 ## --- DRILL-DOWN ---
 if "selected_loc" in st.session_state and "selected_date" in st.session_state:
@@ -293,6 +248,63 @@ if "selected_loc" in st.session_state and "selected_date" in st.session_state:
     st.write("---")
     st.subheader(f"🔍 {sel_loc.title()} - {sel_date.strftime('%m/%d')}")
 
+    # --- 1. PREP SUMMARIES (Top Row) ---
+    # Query for BB Items
+    bb_summary_query = """
+            SELECT oi.item_name, SUM(oi.quantity) as total_qty
+            FROM orders_head h
+            JOIN order_checks c ON h.order_guid = c.order_guid
+            JOIN order_items oi ON c.check_guid = oi.check_guid
+            WHERE h.location_id::uuid = :loc_id 
+              AND (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date = :sel_date
+              AND h.deleted = FALSE
+              AND oi.item_name ILIKE '%%BB%%'
+            GROUP BY oi.item_name ORDER BY total_qty DESC
+        """
+
+    # Query for Taco Bar Items
+    taco_summary_query = """
+            SELECT oi.item_name, SUM(oi.quantity) as total_qty
+            FROM orders_head h
+            JOIN order_checks c ON h.order_guid = c.order_guid
+            JOIN order_items oi ON c.check_guid = oi.check_guid
+            WHERE h.location_id::uuid = :loc_id 
+              AND (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date = :sel_date
+              AND h.deleted = FALSE
+              AND oi.item_name ILIKE '%%Taco Bar%%'
+            GROUP BY oi.item_name ORDER BY total_qty DESC
+        """
+
+    bb_df = run_query(bb_summary_query, params={"loc_id": db_loc_id, "sel_date": sel_date})
+    taco_df = run_query(taco_summary_query, params={"loc_id": db_loc_id, "sel_date": sel_date})
+
+    if not bb_df.empty or not taco_df.empty:
+        st.markdown("### 🌯 Daily Prep Totals")
+
+
+        # Helper to build the badge string with "No-Split" logic
+        def build_badges(df, bg_color, border_color):
+            return " ".join([
+                f"<span style='display: inline-block; background:{bg_color}; padding:2px 10px; "
+                f"margin: 2px; border-radius:5px; border:1px solid {border_color}; "
+                f"white-space: nowrap; font-size: 13px;'>"
+                f"<b>{row['item_name']}</b>: {int(row['total_qty'])}</span>"
+                for _, row in df.iterrows()
+            ])
+
+
+        # Row 1: BB Items
+        if not bb_df.empty:
+            bb_badges = build_badges(bb_df, "#f0f2f6", "#dcdfe3")
+            st.markdown(f"**BB Items:** {bb_badges}", unsafe_allow_html=True)
+
+        # Row 2: Taco Bar Items
+        if not taco_df.empty:
+            taco_badges = build_badges(taco_df, "#fff4e6", "#ffd8a8")
+            st.markdown(f"<div style='margin-top:8px;'><b>Taco Bar:</b> {taco_badges}</div>", unsafe_allow_html=True)
+
+        st.write("---")
+    # --- 2. DETAILED ORDER LIST ---
     detail_query = """
         WITH OrderTotals AS (
             SELECT 
@@ -300,8 +312,8 @@ if "selected_loc" in st.session_state and "selected_date" in st.session_state:
                 SUM(c.total_amount) as true_order_total
             FROM orders_head h
             JOIN order_checks c ON h.order_guid = c.order_guid
-            WHERE h.location_id::uuid = %s 
-              AND (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date = %s
+            WHERE h.location_id::uuid = :loc_id 
+              AND (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date = :sel_date
               AND h.deleted = FALSE
             GROUP BY h.order_guid
         )
@@ -319,30 +331,21 @@ if "selected_loc" in st.session_state and "selected_date" in st.session_state:
         JOIN order_items oi ON c.check_guid = oi.check_guid
         LEFT JOIN item_modifiers im ON oi.selection_guid = im.selection_guid
         JOIN OrderTotals ot ON h.order_guid = ot.order_guid
-        WHERE h.location_id::uuid = %s 
-          AND (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date = %s 
+        WHERE h.location_id::uuid = :loc_id 
+          AND (h.estimated_fulfillment_date AT TIME ZONE 'America/New_York')::date = :sel_date 
           AND h.deleted = FALSE
-        GROUP BY 
-            h.order_guid,
-            h.order_number, 
-            c.customer_first, 
-            c.customer_last, 
-            h.estimated_fulfillment_date, 
-            oi.item_name, 
-            oi.quantity,
-            ot.true_order_total
+        GROUP BY 1, 2, 3, 4, 5, 6, 8
         ORDER BY local_time ASC
     """
-    full_df = run_query(detail_query, (db_loc_id, sel_date, db_loc_id, sel_date))
+
+    full_df = run_query(detail_query, params={"loc_id": db_loc_id, "sel_date": sel_date})
 
     if not full_df.empty:
-        # Grouping by the unique GUID instead of the non-unique Number
+        # Sort=False preserves the SQL 'ORDER BY local_time'
         for order_guid, order_group in full_df.groupby('order_guid', sort=False):
-            # We still pull the order_number for the label
             order_num = order_group['order_number'].iloc[0]
             customer = order_group['customer_name'].iloc[0]
-            if not customer or customer.strip() == "":
-                customer = "NO NAME"
+            customer = customer.strip() if customer else "NO NAME"
 
             time_str = order_group['local_time'].iloc[0].strftime('%I:%M %p')
             total = order_group['order_total'].iloc[0]
@@ -350,6 +353,7 @@ if "selected_loc" in st.session_state and "selected_date" in st.session_state:
             is_high_value = total >= 2000
             alert_emoji = "⚠️ " if is_high_value else ""
 
+            # Use item_name check for delivery tags
             is_delivery = order_group['item_name'].str.contains('delivery', case=False).any()
             tag = " - 🚚 DELIVERY" if is_delivery else ""
 
@@ -360,15 +364,10 @@ if "selected_loc" in st.session_state and "selected_date" in st.session_state:
                     st.error(f"**High Value Order: ${total:,.2f}** - Verify production capacity.")
 
                 for _, row in order_group.iterrows():
-                    # Clean the data
                     qty = int(row['quantity'])
-                    # .strip() removes leading/trailing whitespace that breaks Markdown
-                    item_name = str(row['item_name']).strip() 
-                    
-                    # Use a single f-string with clean boundaries
+                    item_name = str(row['item_name']).strip()
                     st.markdown(f"**{qty} - {item_name}**")
-                
-                    # Clean the modifiers check
+
                     mods = row.get('mods')
                     if pd.notna(mods) and str(mods).strip() not in ["", "None", "nan"]:
                         st.caption(f"↳ {str(mods).strip()}")
