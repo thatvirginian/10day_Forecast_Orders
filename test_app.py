@@ -360,9 +360,15 @@ if "selected_loc" in st.session_state and "selected_date" in st.session_state:
                     st.error(f"**High Value Order: ${total:,.2f}** - Verify production capacity.")
 
                 for _, row in order_group.iterrows():
-                    st.markdown(f"**{int(row['quantity'])} - {row['item_name']}**")
-
-                    # Check if mods exists and is not 'nan' (string) or None
+                    # Clean the data
+                    qty = int(row['quantity'])
+                    # .strip() removes leading/trailing whitespace that breaks Markdown
+                    item_name = str(row['item_name']).strip() 
+                    
+                    # Use a single f-string with clean boundaries
+                    st.markdown(f"**{qty} - {item_name}**")
+                
+                    # Clean the modifiers check
                     mods = row.get('mods')
-                    if pd.notna(mods) and str(mods).lower() != 'nan' and str(mods).strip() != "":
-                        st.caption(f"↳ {mods}")
+                    if pd.notna(mods) and str(mods).strip() not in ["", "None", "nan"]:
+                        st.caption(f"↳ {str(mods).strip()}")
