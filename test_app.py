@@ -239,6 +239,32 @@ if not grid_df.empty:
                               disabled=True,
                               help=f"{location.title()}: No scheduled orders.")
 
+# --- TOTAL ROW SECTION ---
+st.markdown("<div class='total-header'>Daily Summary</div>", unsafe_allow_html=True)
+
+# 1. Sum up the daily totals for all stores
+daily_grand_totals = {}
+for date_col in grid_df.columns:
+    day_sum = 0
+    for location in grid_df.index:
+        day_sum += rev_map.get((location, date_col), 0)
+    daily_grand_totals[date_col] = day_sum
+
+# 2. Create the columns for the footer
+total_cols = st.columns(14)
+for i, date_col in enumerate(grid_df.columns):
+    with total_cols[i]:
+        total_rev = daily_grand_totals.get(date_col, 0)
+
+        # Determine if the daily company total is "High Volume" (e.g., $10k)
+        suffix = "_gold" if total_rev >= 10000 else ""
+
+        # This matches the 3-line format: NAME / SLOTS / TOTAL
+        # We leave the middle line empty or use it for a summary label
+        total_label = f"Total Revenue\n${total_rev:,.2f}"
+
+        st.button(total_label, key=f"total_{date_col}{suffix}", disabled=True)
+        
 ## --- DRILL-DOWN ---
 if "selected_loc" in st.session_state and "selected_date" in st.session_state:
     sel_loc = st.session_state.selected_loc
